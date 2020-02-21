@@ -3,10 +3,12 @@
 import rospy
 from rover_drive.msg import drive_vel
 from sensor_msgs.msg import Joy
+from sensor_msgs.msg import JointState
 import odrive
 from odrive.enums import *
 from odrive.utils import dump_errors
 from fibre.utils import Event, Logger
+from math import pi
 
 
 SPEED_LIMIT = 2000
@@ -20,15 +22,11 @@ class Driver():
         # specify left, middle, and right ODrives
         rospy.loginfo("Looking for ODrives...")
 
-        self.SERIAL_NUMS = [
-            35593293288011,                  # Left, 0
-            35550393020494,                  # Middle, 1
-            35563278839886]                  # Right, 2
+        self.SERIAL_NUMS = 35593293288011,                  # Left, 0
 
-        self.odrvs = [
-            None,
-            None,
-            None]
+        self.odrvs = None
+
+        self.zeropts = [None,None]
 
         # Get ODrives
         done_signal = Event(None)
@@ -55,131 +53,142 @@ class Driver():
         # # odrv2 = odrive.find_any()
         rospy.loginfo("Found ODrives")
 
-        # Set left and right axis
-        self.leftAxes = [self.odrvs[0].axis0, self.odrvs[0].axis1, self.odrvs[1].axis1]
-        self.rightAxes = [self.odrvs[1].axis0, self.odrvs[2].axis0, self.odrvs[2].axis1]
-        self.axes = self.leftAxes + self.rightAxes
-
-        # Set axis state
-        rospy.logdebug("Setting velocity control")
-        for ax in (self.leftAxes + self.rightAxes):
-            ax.watchdog_feed()
+        # # Set axis state
+        # rospy.logdebug("Setting velocity control")
+        # for ax in (self.leftAxes + self.rightAxes):
+        #     ax.watchdog_feed()
 
         # Clear errors
-        for odrv in self.odrvs:
-            dump_errors(odrv, True)
+        dump_errors(self.odrvs, True)
 
-        for ax in (self.leftAxes + self.rightAxes):
-            ax.controller.vel_ramp_enable = True
-            ax.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
-            ax.controller.config.control_mode = CTRL_MODE_VELOCITY_CONTROL
+        self.odrvs.axis0.controller.vel_ramp_enable = True
+        self.odrvs.axis0.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
+        self.odrvs.axis0.controller.config.control_mode = CTRL_MODE_POSITION_CONTROL
+        self.odrvs.axis1.controller.vel_ramp_enable = True
+        self.odrvs.axis1.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
+        self.odrvs.axis1.controller.config.control_mode = CTRL_MODE_POSITION_CONTROL
+
+        self.zeros = find_zero(self)
 
         # Sub to topic
-        rospy.Subscriber('joy', Joy, self.vel_callback)
+        rospy.Subscriber('joint_states', JointState, self.pos_callback)
 
-        # Set first watchdog
-        self.timeout = timeout  # log error if this many seconds occur between received messages
-        self.timer = rospy.Timer(rospy.Duration(self.timeout), self.watchdog_callback, oneshot=True)
-        self.watchdog_fired = False
+        # # Set first watchdog
+        # self.timeout = timeout  # log error if this many seconds occur between received messages
+        # self.timer = rospy.Timer(rospy.Duration(self.timeout), self.watchdog_callback, oneshot=True)
+        # self.watchdog_fired = False
 
-        # Init other variables
-        self.last_msg_time = 0
-        self.last_recv_time = 0
-        self.next_wd_feed_time = 0
+        # # Init other variables
+        # self.last_msg_time = 0
+        # self.last_recv_time = 0
+        # self.next_wd_feed_time = 0
 
         rospy.loginfo("Ready for topic")
         rospy.spin()
 
-    def vel_callback(self, data):
+    def pos_callback(self, data):
+        # Convert the angle from radians to encoder ticks
+        shoulderPos = data.position[1]*42*300/2/pi + self.zeros[0] #TODO + const from lim switch to default
+        elbowPos = data.position[2]*42*300/2/pi + self.zeros[1] #TODO + const from lim switch to default
 
-        # Record times
-        recv_time = rospy.Time.now().to_sec()
-        msg_time = data.header.stamp.to_sec()
+        # Set the postion to the goal state
+        self.odrv.axis0.controller.pos_setpoint = shoulderPos
+        self.odrv.axis1.controller.pos_setpoint = elbowPos
 
-        # Filter old/delayed messages
-        if (msg_time < (recv_time - 0.25)):
-            # And if the time difference is significantly greater than the average offset
-            # Ignore this msg
-            rospy.logwarn("Ignoring {} second old message".format(recv_time - msg_time))
-            return
+        # Log positions
+        rospy.loginfo("Set position of Shoulder axis to " + shoulderPos)
+        rospy.loginfo("Set position of Elbow axis to " + elbowPos)
+        """
+                # # Notify of reconnection
+                # if (self.watchdog_fired == True):
+                #     self.watchdog_fired = False
+                #     self.conn_lost_dur = rospy.Time.now() - self.conn_lost_time
+                #     rospy.logwarn("Connection to controller reestablished! Lost connection for {} seconds.".format(self.conn_lost_dur.to_sec()))
 
-        # Filter messages at frequency
-        if (msg_time < (self.last_msg_time + 1.0/MSG_PER_SECOND)):
-            # Ignore this message
-            return
-        else:
-            rospy.logdebug("Time since last message received: {} seconds".format(recv_time - self.last_recv_time))
-            self.last_recv_time = recv_time
-            self.last_msg_time = msg_time
+                # --- Time BEGIN here
+                # odrv_com_time_start = rospy.Time.now().to_sec()
+                # # Read errors and feed watchdog at slower rate
+                # if (recv_time > self.next_wd_feed_time):
+                #     self.next_wd_feed_time = recv_time + 1.0/WD_FEED_PER_SECOND
+                #     # Do stuff for all axes
+                #     for ax in self.axes:
+                #         ax.watchdog_feed()
 
-        # Notify of reconnection
-        if (self.watchdog_fired == True):
-            self.watchdog_fired = False
-            self.conn_lost_dur = rospy.Time.now() - self.conn_lost_time
-            rospy.logwarn("Connection to controller reestablished! Lost connection for {} seconds.".format(self.conn_lost_dur.to_sec()))
+                #         # TODO
+                #         # # ODrive watchdog error clear
+                #         # if(ax.error == errors.axis.ERROR_WATCHDOG_TIMER_EXPIRED):
+                #         #     ax.error = errors.axis.ERROR_NONE
+                #         #     rospy.logwarn("Cleared ODrive watchdog error")
+                #         # For other errors
+                #         if (ax.error != errors.axis.ERROR_NONE):
+                #             rospy.logfatal("Received axis error: {} {}".format(self.axes.index(ax), ax.error))
+                
+                # -- Time STOP: Calculate time taken to reset ODrive
+                # rospy.logdebug("Reseting each ODrive watchdog took {} seconds".format(rospy.Time.now().to_sec() - odrv_com_time_start))
 
-        # --- Time BEGIN here
-        odrv_com_time_start = rospy.Time.now().to_sec()
-        # Read errors and feed watchdog at slower rate
-        if (recv_time > self.next_wd_feed_time):
-            self.next_wd_feed_time = recv_time + 1.0/WD_FEED_PER_SECOND
-            # Do stuff for all axes
-            for ax in self.axes:
-                ax.watchdog_feed()
+                # # Emergency brake - 4 & 5 are bumpers
+                # if (data.buttons[4] and data.buttons[5]):
+                #     # Stop motors
+                #     rospy.logdebug("Applying E-brake")
+                #     for ax in (self.leftAxes + self.rightAxes):
+                #         ax.controller.vel_ramp_target = 0
+                #         ax.controller.vel_setpoint = 0
+                # else:
+                #     # Control motors as tank drive
+                #     for ax in self.leftAxes:
+                #         ax.controller.vel_ramp_target = data.axes[1] * SPEED_LIMIT
+                #     for ax in self.rightAxes:
+                #         ax.controller.vel_ramp_target = data.axes[4] * SPEED_LIMIT
+                #     # -- Time STOP: Calculate time taken to reset ODrive
+                #     rospy.logdebug("Communication with odrives took {} seconds".format(rospy.Time.now().to_sec() - odrv_com_time_start))
 
-                # TODO
-                # # ODrive watchdog error clear
-                # if(ax.error == errors.axis.ERROR_WATCHDOG_TIMER_EXPIRED):
-                #     ax.error = errors.axis.ERROR_NONE
-                #     rospy.logwarn("Cleared ODrive watchdog error")
-                # For other errors
-                if (ax.error != errors.axis.ERROR_NONE):
-                    rospy.logfatal("Received axis error: {} {}".format(self.axes.index(ax), ax.error))
+                # rospy.loginfo(rospy.get_caller_id() + "Left: %s", data.axes[1] * SPEED_LIMIT)
+                # rospy.loginfo(rospy.get_caller_id() + "Right: %s", data.axes[4] * SPEED_LIMIT)
+
+                # Received mesg so reset watchdog
+                # self.timer.shutdown()
+                # self.timer = rospy.Timer(rospy.Duration(self.timeout), self.watchdog_callback, oneshot=True)
+
+                # tot_time = rospy.Time.now().to_sec() - recv_time
+
+                # --- Time STOP: Calculate time taken to reset ODrive
+            #     rospy.logdebug("Callback execution took {} seconds".format(tot_time))
+
+            # def watchdog_callback(self, event):
+            #     # Have not received mesg for self.timeout seconds
+            #     self.conn_lost_time = rospy.Time.now()
+            #     rospy.logwarn("Control timeout! {} seconds since last control!".format(self.timeout))
+            #     self.watchdog_fired = True
+
+            #     # Stop motors
+            #     for ax in self.leftAxes:
+            #         ax.controller.vel_ramp_target = 0
+            #         ax.controller.vel_setpoint = 0
+            #     for ax in self.rightAxes:
+            #         ax.controller.vel_ramp_target = 0
+            #         ax.controller.vel_setpoint = 0
+        """
+
+    def find_zero(self):
+        pos0, pos1 = 0
+        axis0z, axis1z = None
+
+        #Moves each axis down until they hit the limit switch, then records the result
+        while axis0z == None | axis1z == None:
+            self.odrv.axis0.controller.pos_setpoint = pos0
+            self.odrv.axis1.controller.pos_setpoint = pos1
+            #TODO 
+            # if axis0 limit switch pressed:
+            #     axis0z = self.odrv.axis0.encoder.pos_estimate
+            # else:
+            #     pos0 -= pos0
+            # if axis1 limit switch pressed:
+            #     axis1z = self.odrv.axis1.encoder.pos_estimate
+            # else:
+            #     pos1 -= pos1
         
-        # -- Time STOP: Calculate time taken to reset ODrive
-        rospy.logdebug("Reseting each ODrive watchdog took {} seconds".format(rospy.Time.now().to_sec() - odrv_com_time_start))
+        return [axis0z, axis1z]
 
-        # Emergency brake - 4 & 5 are bumpers
-        if (data.buttons[4] and data.buttons[5]):
-            # Stop motors
-            rospy.logdebug("Applying E-brake")
-            for ax in (self.leftAxes + self.rightAxes):
-                ax.controller.vel_ramp_target = 0
-                ax.controller.vel_setpoint = 0
-        else:
-            # Control motors as tank drive
-            for ax in self.leftAxes:
-                ax.controller.vel_ramp_target = data.axes[1] * SPEED_LIMIT
-            for ax in self.rightAxes:
-                ax.controller.vel_ramp_target = data.axes[4] * SPEED_LIMIT
-            # -- Time STOP: Calculate time taken to reset ODrive
-            rospy.logdebug("Communication with odrives took {} seconds".format(rospy.Time.now().to_sec() - odrv_com_time_start))
-
-        rospy.loginfo(rospy.get_caller_id() + "Left: %s", data.axes[1] * SPEED_LIMIT)
-        rospy.loginfo(rospy.get_caller_id() + "Right: %s", data.axes[4] * SPEED_LIMIT)
-
-        # Received mesg so reset watchdog
-        self.timer.shutdown()
-        self.timer = rospy.Timer(rospy.Duration(self.timeout), self.watchdog_callback, oneshot=True)
-
-        tot_time = rospy.Time.now().to_sec() - recv_time
-
-        # --- Time STOP: Calculate time taken to reset ODrive
-        rospy.logdebug("Callback execution took {} seconds".format(tot_time))
-
-    def watchdog_callback(self, event):
-        # Have not received mesg for self.timeout seconds
-        self.conn_lost_time = rospy.Time.now()
-        rospy.logwarn("Control timeout! {} seconds since last control!".format(self.timeout))
-        self.watchdog_fired = True
-
-        # Stop motors
-        for ax in self.leftAxes:
-            ax.controller.vel_ramp_target = 0
-            ax.controller.vel_setpoint = 0
-        for ax in self.rightAxes:
-            ax.controller.vel_ramp_target = 0
-            ax.controller.vel_setpoint = 0
 
     def clear_errors(self, odrv):
         dump_errors(odrv, True)
