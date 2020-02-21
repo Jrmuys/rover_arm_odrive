@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 
 import rospy
-from rover_drive.msg import drive_vel
-from sensor_msgs.msg import Joy
 from sensor_msgs.msg import JointState
 import odrive
 from odrive.enums import *
@@ -22,7 +20,7 @@ class Driver():
         # specify left, middle, and right ODrives
         rospy.loginfo("Looking for ODrives...")
 
-        self.SERIAL_NUMS = 35593293288011,                  # Left, 0
+        self.SERIAL_NUMS = 35593293288011,  #TODO find serial number for arm odrive
 
         self.odrvs = None
 
