@@ -7,30 +7,23 @@ from odrive.enums import *
 from odrive.utils import dump_errors
 from fibre.utils import Event, Logger
 from math import pi
-import Jetson.GPIO as GPIO
+
 
 SPEED_LIMIT = 2000
 MSG_PER_SECOND = 60
 WD_FEED_PER_SECOND = 2
 
-SHOULDER_LS_PIN = 232
-ELBOW_LS_PIN = 15
-
 class Driver():
 
     def __init__(self, timeout):
-        GPIO.setmode(GPIO.BCM)
-        # setup GPIO pins
-        GPIO.setup(SHOULDER_LS_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        GPIO.setup(ELBOW_LS_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-
+        
         # specify left, middle, and right ODrives
         rospy.loginfo("Looking for ODrives...")
 
+        self.SERIAL_NUMS = 35593293288011,  #TODO find serial number for arm odrive
 
-
-        self.SERIAL_NUM = 35593293288011,  #TODO find serial number for arm odrive
         self.odrvs = None
+
         self.zeropts = [None,None]
 
         # Get ODrives
@@ -38,11 +31,12 @@ class Driver():
 
         def discovered_odrv(obj):
             print("Found odrive with sn: {}".format(obj.serial_number))
-            if obj.serial_number == self.SERIAL_NUM:
-                self.odrvs = obj
+            if obj.serial_number in self.SERIAL_NUMS:
+                self.odrvs[self.SERIAL_NUMS.index(obj.serial_number)] = obj
+                print("ODrive is # {}".format(self.SERIAL_NUMS.index(obj.serial_number)))
             else:
                 print("ODrive sn not found in list. New ODrive?")
-            if not None == self.odrvs:
+            if not None in self.odrvs:
                 done_signal.set()
 
         odrive.find_all("usb", None, discovered_odrv, done_signal, None, Logger(verbose=False))
@@ -52,17 +46,23 @@ class Driver():
         finally:
             done_signal.set()
 
+        # self.odrv0 = odrive.find_any()
+        # # odrv1 = odrive.find_any()
+        # # odrv2 = odrive.find_any()
         rospy.loginfo("Found ODrives")
 
         # # Set axis state
         # rospy.logdebug("Setting velocity control")
-        # self.odrvs.watchdog_feed()
+        # for ax in (self.leftAxes + self.rightAxes):
+        #     ax.watchdog_feed()
 
         # Clear errors
         dump_errors(self.odrvs, True)
 
+        self.odrvs.axis0.controller.vel_ramp_enable = True
         self.odrvs.axis0.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
         self.odrvs.axis0.controller.config.control_mode = CTRL_MODE_POSITION_CONTROL
+        self.odrvs.axis1.controller.vel_ramp_enable = True
         self.odrvs.axis1.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
         self.odrvs.axis1.controller.config.control_mode = CTRL_MODE_POSITION_CONTROL
 
@@ -70,6 +70,16 @@ class Driver():
 
         # Sub to topic
         rospy.Subscriber('joint_states', JointState, self.pos_callback)
+
+        # # Set first watchdog
+        # self.timeout = timeout  # log error if this many seconds occur between received messages
+        # self.timer = rospy.Timer(rospy.Duration(self.timeout), self.watchdog_callback, oneshot=True)
+        # self.watchdog_fired = False
+
+        # # Init other variables
+        # self.last_msg_time = 0
+        # self.last_recv_time = 0
+        # self.next_wd_feed_time = 0
 
         rospy.loginfo("Ready for topic")
         rospy.spin()
@@ -80,8 +90,8 @@ class Driver():
         elbowPos = data.position[2]*42*300/2/pi + self.zeros[1] #TODO + const from lim switch to default
 
         # Set the postion to the goal state
-        self.odrv.axis0.controller.move_to_pos = shoulderPos
-        self.odrv.axis1.controller.move_to_pos = elbowPos
+        self.odrv.axis0.controller.pos_setpoint = shoulderPos
+        self.odrv.axis1.controller.pos_setpoint = elbowPos
 
         # Log positions
         rospy.loginfo("Set position of Shoulder axis to " + shoulderPos)
@@ -166,14 +176,14 @@ class Driver():
             self.odrv.axis0.controller.pos_setpoint = pos0
             self.odrv.axis1.controller.pos_setpoint = pos1
             #TODO 
-            if GPIO.input(SHOULDER_LS_PIN):
-                axis0z = self.odrv.axis0.encoder.pos_estimate
-            else:
-                pos0 -= pos0
-            if GPIO.input(ELBOW_LS_PIN):
-                axis1z = self.odrv.axis1.encoder.pos_estimate
-            else:
-                pos1 -= pos1
+            # if axis0 limit switch pressed:
+            #     axis0z = self.odrv.axis0.encoder.pos_estimate
+            # else:
+            #     pos0 -= pos0
+            # if axis1 limit switch pressed:
+            #     axis1z = self.odrv.axis1.encoder.pos_estimate
+            # else:
+            #     pos1 -= pos1
         
         return [axis0z, axis1z]
 
