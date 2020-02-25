@@ -17,15 +17,11 @@ TIMEOUT = 2 # Seconds
 
 no_calib = False
 
-SERIAL_NUMS = [
-    35593293288011,                  # Left, 0
-    35550393020494,                  # Middle, 1
-    35563278839886]                  # Right, 2
+SERIAL_NUMS = 35550393020494                 # Left, 0
 
-odrvs = [
-    None,
-    None,
-    None]
+
+odrv = None
+
 
 def clear_errors(odrv):
     dump_errors(odrv, True)
@@ -81,13 +77,12 @@ def set_params(ax):
 def wait_and_exit_on_error(ax):
     while ax.current_state != AXIS_STATE_IDLE:
         time.sleep(0.1)
-        for odrv in odrvs:
-            odrv.axis0.watchdog_feed()
-            odrv.axis1.watchdog_feed()
+        odrv.axis0.watchdog_feed()
+        odrv.axis1.watchdog_feed()
     if ax.error != errors.axis.ERROR_NONE:
-        for odrv in odrvs:
-            if(ax == odrv.axis0 or ax == odrv.axis1):
-                dump_errors(odrv, True)
+
+        if(ax == odrv.axis0 or ax == odrv.axis1):
+            dump_errors(odrv, True)
 
         exit()
 
@@ -162,61 +157,38 @@ if (__name__ == "__main__"):
     args = parser.parse_args()
 
     print("Looking for ODrive")
-    # odrv = odrive.find_any(serial_number=args.serial_number)
+    odrv = odrive.find_any()
 
-    # Get ODrives
-    done_signal = Event(None)
 
-    def discovered_odrv(obj):
-        print("Found odrive with sn: {}".format(obj.serial_number))
-        if obj.serial_number in SERIAL_NUMS:
-            odrvs[SERIAL_NUMS.index(obj.serial_number)] = obj
-            print("ODrive is # {}".format(SERIAL_NUMS.index(obj.serial_number)))
-        else:
-            print("ODrive sn not found in list. New ODrive?")
-        if not None in odrvs:
-            done_signal.set()
 
-    odrive.find_all("usb", None, discovered_odrv, done_signal, None, Logger(verbose=False))
-    # Wait for ODrives
-    try:
-        done_signal.wait(timeout=120)
-    finally:
-        done_signal.set()
+ 
 
-    # Which odrives
-    if args.which_odrive == None:
-        to_calib = odrvs
-    else:
-        to_calib = [odrvs[args.which_odrive]]
-
-    for odrv in to_calib:
-        odrv.config.brake_resistance = 5.1
-        print("Calibrating ODrive # {}".format(to_calib.index(odrv)))
-        if args.calib_both_axis:
-            odrv.axis0.watchdog_feed()
-            odrv.axis1.watchdog_feed()
-            clear_errors(odrv)
-            set_params(odrv.axis0)
-            if not args.no_calib:
-                calibrate(odrv.axis0)
-            set_params(odrv.axis1)
-            if not args.no_calib:
-                calibrate(odrv.axis1)
-        elif args.axis == 0:
-            ax = odrv.axis0
-            ax.watchdog_feed()
-            clear_errors(odrv)
-            set_params(ax)
-            if not args.no_calib:
-                calibrate(ax)
-        elif args.axis == 1:
-            ax = odrv.axis1
-            ax.watchdog_feed()
-            clear_errors(odrv)
-            set_params(ax)
-            if not args.no_calib:
-                calibrate(ax)
+  
+    odrv.config.brake_resistance = 0.5
+    if args.calib_both_axis:
+        odrv.axis0.watchdog_feed()
+        odrv.axis1.watchdog_feed()
+        clear_errors(odrv)
+        set_params(odrv.axis0)
+        if not args.no_calib:
+            calibrate(odrv.axis0)
+        set_params(odrv.axis1)
+        if not args.no_calib:
+            calibrate(odrv.axis1)
+    elif args.axis == 0:
+        ax = odrv.axis0
+        ax.watchdog_feed()
+        clear_errors(odrv)
+        set_params(ax)
+        if not args.no_calib:
+            calibrate(ax)
+    elif args.axis == 1:
+        ax = odrv.axis1
+        ax.watchdog_feed()
+        clear_errors(odrv)
+        set_params(ax)
+        if not args.no_calib:
+            calibrate(ax)
         
     if args.save_and_reboot:
         save_reboot(odrv)

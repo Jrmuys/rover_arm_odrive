@@ -8,18 +8,19 @@ from odrive.utils import dump_errors
 from fibre.utils import Event, Logger
 from math import pi
 import Jetson.GPIO as GPIO
+import time
 
 SPEED_LIMIT = 2000
 MSG_PER_SECOND = 60
 WD_FEED_PER_SECOND = 2
 
-SHOULDER_LS_PIN = 232
+GPIO.setmode(GPIO.BOARD)
+SHOULDER_LS_PIN = 12
 ELBOW_LS_PIN = 15
 
 class Driver():
 
     def __init__(self, timeout):
-        GPIO.setmode(GPIO.BCM)
         # setup GPIO pins
         GPIO.setup(SHOULDER_LS_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
         GPIO.setup(ELBOW_LS_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -29,44 +30,31 @@ class Driver():
 
 
 
-        self.SERIAL_NUM = 35593293288011,  #TODO find serial number for arm odrive
-        self.odrvs = None
+        self.SERIAL_NUM = 35550393020494,  #TODO find serial number for arm odrive
+        self.odrv = None
         self.zeropts = [None,None]
 
         # Get ODrives
         done_signal = Event(None)
 
-        def discovered_odrv(obj):
-            print("Found odrive with sn: {}".format(obj.serial_number))
-            if obj.serial_number == self.SERIAL_NUM:
-                self.odrvs = obj
-            else:
-                print("ODrive sn not found in list. New ODrive?")
-            if not None == self.odrvs:
-                done_signal.set()
-
-        odrive.find_all("usb", None, discovered_odrv, done_signal, None, Logger(verbose=False))
+        self.odrv = odrive.find_any()
         # Wait for ODrives
-        try:
-            done_signal.wait(timeout=120)
-        finally:
-            done_signal.set()
 
         rospy.loginfo("Found ODrives")
 
         # # Set axis state
         # rospy.logdebug("Setting velocity control")
-        # self.odrvs.watchdog_feed()
+        # self.odrv.watchdog_feed()
 
         # Clear errors
-        dump_errors(self.odrvs, True)
+        dump_errors(self.odrv, True)
 
-        self.odrvs.axis0.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
-        self.odrvs.axis0.controller.config.control_mode = CTRL_MODE_POSITION_CONTROL
-        self.odrvs.axis1.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
-        self.odrvs.axis1.controller.config.control_mode = CTRL_MODE_POSITION_CONTROL
+        self.odrv.axis0.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
+        self.odrv.axis0.controller.config.control_mode = CTRL_MODE_POSITION_CONTROL
+        self.odrv.axis1.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
+        self.odrv.axis1.controller.config.control_mode = CTRL_MODE_POSITION_CONTROL
 
-        self.zeros = find_zero(self)
+        self.zeros = self.find_zero()
 
         # Sub to topic
         rospy.Subscriber('joint_states', JointState, self.pos_callback)
@@ -80,101 +68,43 @@ class Driver():
         elbowPos = data.position[2]*42*300/2/pi + self.zeros[1] #TODO + const from lim switch to default
 
         # Set the postion to the goal state
-        self.odrv.axis0.controller.move_to_pos = shoulderPos
-        self.odrv.axis1.controller.move_to_pos = elbowPos
+        self.odrv.axis0.controller.pos_setpoint = shoulderPos
+        self.odrv.axis1.controller.pos_setpoint = elbowPos
 
         # Log positions
-        rospy.loginfo("Set position of Shoulder axis to " + shoulderPos)
-        rospy.loginfo("Set position of Elbow axis to " + elbowPos)
-        """
-                # # Notify of reconnection
-                # if (self.watchdog_fired == True):
-                #     self.watchdog_fired = False
-                #     self.conn_lost_dur = rospy.Time.now() - self.conn_lost_time
-                #     rospy.logwarn("Connection to controller reestablished! Lost connection for {} seconds.".format(self.conn_lost_dur.to_sec()))
-
-                # --- Time BEGIN here
-                # odrv_com_time_start = rospy.Time.now().to_sec()
-                # # Read errors and feed watchdog at slower rate
-                # if (recv_time > self.next_wd_feed_time):
-                #     self.next_wd_feed_time = recv_time + 1.0/WD_FEED_PER_SECOND
-                #     # Do stuff for all axes
-                #     for ax in self.axes:
-                #         ax.watchdog_feed()
-
-                #         # TODO
-                #         # # ODrive watchdog error clear
-                #         # if(ax.error == errors.axis.ERROR_WATCHDOG_TIMER_EXPIRED):
-                #         #     ax.error = errors.axis.ERROR_NONE
-                #         #     rospy.logwarn("Cleared ODrive watchdog error")
-                #         # For other errors
-                #         if (ax.error != errors.axis.ERROR_NONE):
-                #             rospy.logfatal("Received axis error: {} {}".format(self.axes.index(ax), ax.error))
-                
-                # -- Time STOP: Calculate time taken to reset ODrive
-                # rospy.logdebug("Reseting each ODrive watchdog took {} seconds".format(rospy.Time.now().to_sec() - odrv_com_time_start))
-
-                # # Emergency brake - 4 & 5 are bumpers
-                # if (data.buttons[4] and data.buttons[5]):
-                #     # Stop motors
-                #     rospy.logdebug("Applying E-brake")
-                #     for ax in (self.leftAxes + self.rightAxes):
-                #         ax.controller.vel_ramp_target = 0
-                #         ax.controller.vel_setpoint = 0
-                # else:
-                #     # Control motors as tank drive
-                #     for ax in self.leftAxes:
-                #         ax.controller.vel_ramp_target = data.axes[1] * SPEED_LIMIT
-                #     for ax in self.rightAxes:
-                #         ax.controller.vel_ramp_target = data.axes[4] * SPEED_LIMIT
-                #     # -- Time STOP: Calculate time taken to reset ODrive
-                #     rospy.logdebug("Communication with odrives took {} seconds".format(rospy.Time.now().to_sec() - odrv_com_time_start))
-
-                # rospy.loginfo(rospy.get_caller_id() + "Left: %s", data.axes[1] * SPEED_LIMIT)
-                # rospy.loginfo(rospy.get_caller_id() + "Right: %s", data.axes[4] * SPEED_LIMIT)
-
-                # Received mesg so reset watchdog
-                # self.timer.shutdown()
-                # self.timer = rospy.Timer(rospy.Duration(self.timeout), self.watchdog_callback, oneshot=True)
-
-                # tot_time = rospy.Time.now().to_sec() - recv_time
-
-                # --- Time STOP: Calculate time taken to reset ODrive
-            #     rospy.logdebug("Callback execution took {} seconds".format(tot_time))
-
-            # def watchdog_callback(self, event):
-            #     # Have not received mesg for self.timeout seconds
-            #     self.conn_lost_time = rospy.Time.now()
-            #     rospy.logwarn("Control timeout! {} seconds since last control!".format(self.timeout))
-            #     self.watchdog_fired = True
-
-            #     # Stop motors
-            #     for ax in self.leftAxes:
-            #         ax.controller.vel_ramp_target = 0
-            #         ax.controller.vel_setpoint = 0
-            #     for ax in self.rightAxes:
-            #         ax.controller.vel_ramp_target = 0
-            #         ax.controller.vel_setpoint = 0
-        """
+        rospy.loginfo("Set position of Shoulder axis to " + str(shoulderPos))
+        rospy.loginfo("Set position of Elbow axis to " + str(elbowPos))
 
     def find_zero(self):
-        pos0, pos1 = 0
-        axis0z, axis1z = None
+        pos0 = self.odrv.axis0.encoder.pos_estimate
+        pos1 = self.odrv.axis1.encoder.pos_estimate
+        axis0z = None
+        axis1z = None
+        print("Finding zeros")
 
         #Moves each axis down until they hit the limit switch, then records the result
-        while axis0z == None | axis1z == None:
+        while (axis0z == None) or (axis1z == None):
+
             self.odrv.axis0.controller.pos_setpoint = pos0
             self.odrv.axis1.controller.pos_setpoint = pos1
             #TODO 
-            if GPIO.input(SHOULDER_LS_PIN):
+            if (not GPIO.input(SHOULDER_LS_PIN)) and (axis0z == None):
                 axis0z = self.odrv.axis0.encoder.pos_estimate
+                self.odrv.axis0.controller.pos_setpoint = axis0z
+
+                print("Axis0: Zero position set")
             else:
-                pos0 -= pos0
-            if GPIO.input(ELBOW_LS_PIN):
+                pos0 -= 1
+            if (not GPIO.input(SHOULDER_LS_PIN)) and (axis1z == None):
                 axis1z = self.odrv.axis1.encoder.pos_estimate
+                self.odrv.axis1.controller.pos_setpoint = axis1z
+
+                print("Axis1: Zero position set")
             else:
-                pos1 -= pos1
-        
+                pos1 -= 1
+            time.sleep(0.01666666666/2)
+
+
         return [axis0z, axis1z]
 
 
