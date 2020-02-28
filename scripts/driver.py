@@ -59,10 +59,27 @@ class Driver():
         # Sub to topic
         rospy.Subscriber('joint_states', JointState, self.pos_callback)
 
+        self.last_msg_time = 0
+        self.last_recv_time = 0
+
         rospy.loginfo("Ready for topic")
         rospy.spin()
 
     def pos_callback(self, data):
+
+        recv_time = rospy.Time.now().to_sec()
+        msg_time = data.header.stamp.to_sec()
+
+        if (msg_time < (recv_time - 0.25)):
+            rospy.logwarn("Ignoring {} second old message" .format(recv_time - msg_time))
+            return
+
+        if (msg_time < (self.last_msg_time + 1.0/MSG_PER_SECOND)):
+            return
+        else:
+            self.last_recv_time = recv_time
+            self.last_msg_time = msg_time
+
         # Convert the angle from radians to encoder ticks
         shoulderPos = data.position[1]*42*300/2/pi + self.zeros[0] #TODO + const from lim switch to default
         elbowPos = data.position[2]*42*300/2/pi + self.zeros[1] #TODO + const from lim switch to default
